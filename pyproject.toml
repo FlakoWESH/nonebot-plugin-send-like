@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nonebot-plugin-send-like"
+version = "0.1.0"
+description = "NoneBot2 点赞与自动回赞插件，支持手动点赞和资料卡赞满自动回赞（Alconna优化版）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "your@email.com" },
+]
+keywords = ["nonebot", "nonebot2", "plugin", "qq", "like", "send-like", "auto-return", "alconna"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "nonebot2>=2.0.0",
+    "nonebot-adapter-onebot>=2.0.0",
+    "nonebot-plugin-alconna>=0.50.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-name/nonebot-plugin-send-like"
+Repository = "https://github.com/your-name/nonebot-plugin-send-like"
+Issues = "https://github.com/your-name/nonebot-plugin-send-like/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nonebot_plugin_send_like"]
+
+[tool.nonebot]
+plugins = ["nonebot_plugin_send_like"]
