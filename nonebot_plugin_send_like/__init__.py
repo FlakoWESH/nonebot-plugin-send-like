@@ -13,10 +13,12 @@
 from typing import List
 
 from arclet.alconna import Alconna, Args
-from nonebot import get_driver, get_plugin_config, on_notice
+from nonebot import get_driver, get_plugin_config, on_notice, require
 from nonebot.adapters.onebot.v11 import Bot, NoticeEvent
 from nonebot.log import logger
 from nonebot.plugin import PluginMetadata
+
+require("nonebot_plugin_alconna")
 from nonebot_plugin_alconna import (
     AlconnaMatches,
     Arparma,
@@ -38,7 +40,7 @@ __plugin_meta__ = PluginMetadata(
         "给Bot资料卡点满赞，Bot自动回赞"
     ),
     type="application",
-    homepage="https://github.com/nonebot/plugin-alconna",
+    homepage="https://github.com/FlakoWESH/nonebot-plugin-send-like",
     supported_adapters={"~onebot.v11"},
 )
 
