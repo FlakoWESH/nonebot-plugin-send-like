@@ -1,182 +1,126 @@
-"""
-点赞与自动回赞插件（Alconna优化版）
-功能：
-1. 手动点赞：发送 "点赞 @用户" 给指定用户点赞
-2. 自动回赞：当有人给Bot资料卡点满赞时，自动回赞（默认回50次）
-优化点：
-- 使用 Alconna 命令解析器替代手动遍历 MessageSegment
-- 使用 UniMessage 统一消息发送
-- 使用 At/Text 消息段类型替代字符串类型判断
-依赖：nonebot2 + nonebot-adapter-onebot + nonebot-plugin-alconna
-持久化：JSON文件存储，零数据库依赖
-"""
-from typing import List
+"""点赞与自动回赞插件
 
-from arclet.alconna import Alconna, Args
-from nonebot import get_driver, get_plugin_config, on_notice, require
+功能：
+1. 手动点赞：发送 "点赞 @用户" 给指定用户点赞（支持白名单强制）
+2. 自动回赞：有人把 Bot 资料卡点满时自动回赞（默认 50 次）
+3. 白名单：超管维护可点赞名单，定时任务只对名单内启用目标生效
+4. 定时批量点赞：每日固定时间按白名单点一轮，可随时关闭
+5. 防重复 / 防超量：账本状态机保证同目标同日只点一次，每日人数上限默认 499
+6. 风控保护：节奏控制、并发闸门、平台上限识别与当日封锁
+
+依赖：nonebot2 + nonebot-adapter-onebot + nonebot-plugin-alconna
+定时功能可选依赖：nonebot-plugin-apscheduler
+持久化：JSON 文件存储，零数据库依赖
+"""
+
+from nonebot import get_driver, require
 from nonebot.adapters.onebot.v11 import Bot, NoticeEvent
 from nonebot.log import logger
 from nonebot.plugin import PluginMetadata
 
 require("nonebot_plugin_alconna")
-from nonebot_plugin_alconna import (
-    AlconnaMatches,
-    Arparma,
-    At,
-    Text,
-    UniMessage,
-    on_alconna,
-)
 
-from .config import SendLikeConfig
-from .storage import LikeRecordStore
+from . import runtime, timed  # noqa: E402
+from .bootstrap import seed_superusers  # noqa: E402
+from .config import SendLikeConfig  # noqa: E402
 
-# ========== 插件元数据 ==========
 __plugin_meta__ = PluginMetadata(
     name="点赞与自动回赞",
-    description="手动点赞 + 资料卡赞满自动回赞（Alconna优化版）",
+    description="手动点赞 + 资料卡赞满自动回赞 + 白名单 + 定时批量点赞",
     usage=(
         "点赞 @用户 - 给指定用户点赞\n"
-        "给Bot资料卡点满赞，Bot自动回赞"
+        "白名单添加 QQ号 [备注] - 加入白名单（超管）\n"
+        "白名单移除 QQ号 - 移出白名单（超管）\n"
+        "白名单列表 - 查看白名单（超管）\n"
+        "白名单启用 QQ号 - 重新启用已停用的目标（超管）\n"
+        "白名单停用 QQ号 - 停用目标但保留记录（超管）\n"
+        "定时点赞开启 时 分 [人数] [次数] - 每天定时按白名单点一轮（超管）\n"
+        "定时点赞关闭 - 关闭定时点赞（超管）\n"
+        "定时点赞状态 - 查看定时任务状态（超管）\n"
+        "定时点赞立即 [人数] [次数] - 立刻按白名单点一轮（超管）\n"
+        "给 Bot 资料卡点满赞，Bot 自动回赞"
     ),
     type="application",
     homepage="https://github.com/FlakoWESH/nonebot-plugin-send-like",
     supported_adapters={"~onebot.v11"},
+    extra={"version": "0.2.0"},
 )
 
-# ========== 加载配置与存储 ==========
-config = get_plugin_config(SendLikeConfig)
-store = LikeRecordStore(config.send_like_data_file)
+config = runtime.config
+"""插件配置（与 runtime 共用同一份解析结果）"""
 
-
-# ========== Alconna参数解析工具 ==========
-def _extract_at_users(content: UniMessage) -> List[int]:
-    """从UniMessage中提取@用户列表
-
-    Alconna优化点：使用 isinstance(seg, At) 替代 seg.type == "at"
-    """
-    users = []
-    for seg in content:
-        if isinstance(seg, At) and seg.flag == "user" and seg.target and seg.target != "all":
-            users.append(int(seg.target))
-    return users
-
-
-# ========== 命令1：手动点赞 ==========
-# Alconna优化点：
-# - on_alconna 替代 on_command
-# - aliases 参数注册别名
-# - Args["content", UniMessage, ""] 接收包含@用户的消息
-like_cmd = on_alconna(
-    Alconna("点赞", Args["content", UniMessage, ""]),
-    aliases={"赞"},
-    priority=5,
-    block=True,
-)
-
-
-@like_cmd.handle()
-async def manual_like(
-    bot: Bot,
-    arp: Arparma = AlconnaMatches(),
-):
-    """手动点赞处理函数
-
-    Alconna优化点：
-    - Arparma = AlconnaMatches() 依赖注入获取解析结果
-    - arp.query[UniMessage]("content") 类型安全获取参数
-    - 替代原生的 args: Message = CommandArg() + 手动遍历seg
-    """
-    content = arp.query[UniMessage]("content", UniMessage())
-    at_users = _extract_at_users(content)
-
-    if not at_users:
-        await UniMessage.text("请@需要点赞的用户\n用法：点赞 @用户").finish()
-
-    success = 0
-    failed = []
-    for user_id in at_users:
-        try:
-            await bot.send_like(user_id=user_id, times=config.send_like_manual_times)
-            success += 1
-        except Exception as e:
-            failed.append((user_id, str(e)))
-            logger.warning(f"手动点赞失败 user={user_id}: {e}")
-
-    # 使用UniMessage构建结果消息
-    result = UniMessage.text(f"已成功给 {success} 位用户点赞")
-    if failed:
-        result += UniMessage.text(f"\n失败 {len(failed)} 人")
-        if len(failed) <= 3:
-            for uid, reason in failed:
-                result += UniMessage.text(f"\n· {uid}：{reason}")
-
-    await result.finish()
+# 命令层在文件末尾导入：导入即注册 matcher，此时运行时已装配完毕，避免循环导入
+from . import commands  # noqa: E402,F401
 
 
 # ========== 事件：好友资料卡点赞自动回赞 ==========
-# 注意：自动回赞是通知事件，不是命令，因此不使用Alconna
-# 保持 on_notice 监听，在函数内筛选事件类型
-praise_notice = on_notice(priority=5, block=False)
+praise_notice = None
+try:
+    from nonebot import on_notice
+
+    praise_notice = on_notice(priority=5, block=False)
+except Exception:  # noqa: BLE001
+    logger.warning("当前 nonebot 版本不支持 on_notice，自动回赞功能未启用")
 
 
-@praise_notice.handle()
-async def auto_return_like(bot: Bot, event: NoticeEvent):
-    """自动回赞处理函数
+if praise_notice is not None:
 
-    触发条件：
-    1. 事件类型为通知事件（notice）
-    2. notice_type = "notify"
-    3. sub_type = "friend_praise"（好友资料卡点赞）
-    4. 用户当日累计点赞数达到阈值
-    5. 当日尚未回赞过
-    """
-    # 筛选好友点赞事件
-    if not hasattr(event, "notice_type") or event.notice_type != "notify":
-        return
-    if not hasattr(event, "sub_type") or event.sub_type != "friend_praise":
-        return
+    @praise_notice.handle()
+    async def auto_return_like(bot: Bot, event: NoticeEvent):
+        """自动回赞处理函数。
 
-    # 全局开关
-    if not config.send_like_auto_return:
-        return
+        触发条件：好友资料卡点赞事件、当日累计次数达到阈值、当日尚未回赞过。
+        """
+        if getattr(event, "notice_type", None) != "notify":
+            return
+        if getattr(event, "sub_type", None) != "friend_praise":
+            return
+        if not config.send_like_auto_return:
+            return
 
-    user_id = str(event.user_id)
+        user_id = str(event.user_id)
+        times = getattr(event, "times", 1)
+        if not isinstance(times, int) or times < 1:
+            times = 1
 
-    # 本次点赞次数（部分协议端会携带times字段，默认1次）
-    times = getattr(event, "times", 1)
-    if not isinstance(times, int) or times < 1:
-        times = 1
+        record = await runtime.records.increment(user_id, times)
+        if record["is_returned"]:
+            return
 
-    logger.debug(f"收到好友点赞事件 user={user_id} times={times}")
-
-    # 累加点赞次数
-    record = await store.increment(user_id, times)
-
-    # 已回赞则跳过（幂等性保证）
-    if record["is_returned"]:
-        return
-
-    # 达到阈值触发回赞
-    if record["total_times"] >= config.send_like_praise_threshold:
-        try:
-            await bot.send_like(
-                user_id=event.user_id,
-                times=config.send_like_return_times,
-            )
-            await store.mark_returned(user_id)
-            logger.info(
-                f"自动回赞成功 user={user_id} "
-                f"对方点赞={record['total_times']} "
-                f"回赞次数={config.send_like_return_times}"
-            )
-        except Exception as e:
-            logger.error(f"自动回赞失败 user={user_id}: {e}")
+        if record["total_times"] >= config.send_like_praise_threshold:
+            try:
+                await bot.send_like(user_id=event.user_id, times=config.send_like_return_times)
+                await runtime.records.mark_returned(user_id)
+                logger.info(
+                    f"自动回赞成功 user={user_id} 对方点赞={record['total_times']} "
+                    f"回赞次数={config.send_like_return_times}"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"自动回赞失败 user={user_id}: {e}")
 
 
-# ========== 启动时清理过期记录 ==========
+# ========== 启动初始化 ==========
 @get_driver().on_startup
-async def _cleanup_on_startup():
-    """启动时清理30天前的过期点赞记录"""
-    await store.cleanup_old_records(keep_days=30)
-    logger.info("点赞记录过期清理完成")
+async def _startup_init():
+    """清理过期数据、导入超管、恢复定时排程。"""
+    try:
+        await runtime.records.cleanup_old_records(
+            keep_days=config.send_like_record_retention_days
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"点赞记录清理失败: {e!r}")
+
+    try:
+        await runtime.state.prune(config.send_like_record_retention_days)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"账本清理失败: {e!r}")
+
+    try:
+        await seed_superusers()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"超管导入失败: {e!r}")
+
+    try:
+        await timed.restore_schedule()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"定时排程恢复失败: {e!r}")
