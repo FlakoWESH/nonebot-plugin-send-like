@@ -18,17 +18,20 @@ from typing import Any
 import nonebot
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.log import logger
+from nonebot.plugin import require
 
 from . import ledger, runtime, whitelist
 from .like_service import LikeOutcome, LikeStatus
 
-try:  # 调度依赖可选：未安装时插件仍可加载，定时命令给出提示
+try:  # 依赖异常时插件仍可加载，定时命令给出提示
+    require("nonebot_plugin_apscheduler")
     from nonebot_plugin_apscheduler import scheduler as APS_SCHEDULER
 
     SCHEDULER_AVAILABLE = True
-except Exception:  # noqa: BLE001
+except Exception as e:  # noqa: BLE001
     APS_SCHEDULER = None  # type: ignore[assignment]
     SCHEDULER_AVAILABLE = False
+    logger.warning(f"nonebot-plugin-apscheduler 不可用，定时功能已禁用: {e!r}")
 
 JOB_ID = "send_like_timed"
 """定时任务的调度器 ID"""
