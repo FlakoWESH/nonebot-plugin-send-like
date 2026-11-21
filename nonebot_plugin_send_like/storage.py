@@ -135,6 +135,68 @@ class LikeRecordStore:
                 return True
             return False
 
+    async def get_record(self, user_id: str, today: Optional[date] = None) -> Optional[dict]:
+        """读取用户当日记录，不存在返回 None。
+
+        参数:
+            user_id: 用户QQ号
+            today: 日期，默认为今天
+
+        返回:
+            记录字典或 None
+        """
+        if today is None:
+            today = date.today()
+        async with self._lock:
+            self._load()
+            record = self._cache.get(today.isoformat(), {}).get(user_id)
+            return dict(record) if record else None
+
+    async def mark_manual_liked(self, user_id: str, today: Optional[date] = None) -> bool:
+        """标记当日已通过手动/定时点赞过该目标。
+
+        参数:
+            user_id: 目标QQ号
+            today: 日期，默认为今天
+
+        返回:
+            是否写入成功
+        """
+        if today is None:
+            today = date.today()
+        date_key = today.isoformat()
+
+        async with self._lock:
+            self._load()
+            record = self._cache.setdefault(date_key, {}).setdefault(
+                user_id, {"total_times": 0, "is_returned": False}
+            )
+            if record.get("manual_liked"):
+                return True
+            record["manual_liked"] = True
+            self._save()
+            return True
+
+    async def count_liked(self, today: Optional[date] = None) -> int:
+        """统计当日已点赞过的人数（手动点赞与自动回赞都占额度）。
+
+        参数:
+            today: 日期，默认为今天
+
+        返回:
+            int: 当日人数
+        """
+        if today is None:
+            today = date.today()
+        async with self._lock:
+            self._load()
+            records = self._cache.get(today.isoformat(), {})
+            return sum(
+                1
+                for record in records.values()
+                if record.get("manual_liked") or record.get("is_returned")
+            )
+
     async def cleanup_old_records(self, keep_days: int = 30):
         """清理超过指定天数的历史记录
 
